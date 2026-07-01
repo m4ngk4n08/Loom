@@ -1,35 +1,45 @@
-# Methodology Planning Phase: Project Loom
+This Methodology Planning Phase is derived entirely from the hybrid V-Model/Iterative Software Development Life Cycle (SDLC) for Project Loom. It defines the precise, actionable, phase-level project plan, updated specifically to execute a secure deployment on a hardened Linux server. 
 
-This document defines the production-grade Methodology Planning Phase for Project Loom. It maps the hybrid V-Model/Iterative Software Development Life Cycle (SDLC) into an executable system-engineering plan for deployment under .NET 10 Native AOT.
+The security architecture of this Linux deployment is based directly on the essential security controls implemented in the target architecture specification: **Network Isolation (DMZ), Least Privilege Process Execution, Kernel-Enforced Sandboxing, Local File Integrity Monitoring (FIM), and Hardened Local Auditing.**
+
+---
+
+```
+                       [ SYSTEM BOUNDARY & SECURITY ZONES ]
+
+      [ Internet ]
+           │
+           │ (TCP Port 2222)
+           ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│  Linux Host (DMZ Zone)                                                 │
+│                                                                        │
+│  [ UFW / nftables ] (Blocks all ports except SSH 22 & Loom 2222)       │
+│           │
+│           ▼
+│  [ Systemd Sandbox ] (Runs as unprivileged user: 'loomd')              │
+│  ├── ProtectSystem=strict                                              │
+│  ├── ProtectHome=true                                                  │
+│  ├── PrivateTmp=true                                                   │
+│  ├── CapabilityBoundingSet=~CAP_SYS_ADMIN                              │
+│  │                                                                     │
+│  │   [ Loom.Host (Native Binary) ]                                     │
+│  │   ├── Loom.SSH (Port 2222 Server)                                   │
+│  │   ├── Loom.TUI (Virtual Streams)                                    │
+│  │   ├── Loom.Core (AVX2/Neon SIMD Engine)                             │
+│  │   └── Loom.Storage (Memory-Mapped Files & Ingestion)                │
+│  │            │                                                        │
+│  └───┼────────┼────────────────────────────────────────────────────────┘
+       │        │ (Zero-Copy Reads)
+       ▼        ▼
+  [ Syslog /   [ Secure Cache ] (Mapped on Disk: /var/cache/loom/index.bin)
+   Journald ]   - Permissions: chmod 600
+                - Owned by: loomd:loomd
+```
 
 ---
 
 ## 1. Phase Decomposition
-
-```
-[ V-MODEL LEFT-SIDE DESIGN & EXECUTION MATRIX ]
-
-         Stage A: Requirements & Threat Modeling
-                         │
-                         ▼
-           Stage B: AOT-Compliant Design
-                         │
-                         ▼
-         Stage C: Incremental Implementation
-           ├── C1. Loom.SSH (Port 2222 Engine)
-           ├── C2. Loom.TUI (IAnsiConsole Streams)
-           ├── C3. Loom.Core (AVX2/Neon SIMD)
-           ├── C4. Loom.Storage (Memory-Mapped Files)
-           └── C5. Loom.Storage (Utf8Json Ingestion)
-                         │
-                         ▼
-            Stage D: Static & Trim Analysis
-                         │
-                         ▼
-          Stage E: CI/CD & Build Infrastructure
-```
-
----
 
 ### Stage A: Requirements Engineering & Threat Modeling
 
@@ -37,21 +47,22 @@ This document defines the production-grade Methodology Planning Phase for Projec
 *   Project Loom Build Plan initiated; solution configuration files (`Loom.sln`, individual `.csproj` configurations) drafted.
 
 #### Exit Criteria
-*   Security architecture sign-off on the STRIDE Threat Model.
-*   Zero-allocation Service Level Agreements (SLAs) defined for Phase 1 (Parser) and Phase 5 (Ingestor).
+*   STRIDE Threat Model approved by Lead Security Architect, verifying zero-allocation boundary checks.
+*   Security architecture sign-off on the Linux system deployment layout.
 
 #### Required Artifacts
-*   **STRIDE Threat Matrix Document:** Outlining precise trust boundaries and mitigation strategies for raw TCP inputs.
+*   **STRIDE Threat Matrix Document:** Mapping host boundaries, memory structures, and mitigation strategies for raw TCP inputs.
+*   **Host Security Baseline Specification:** Detailing network topology, required firewalls, systemd configurations, and file system permissions.
 *   **Interface Contract Stubs:** Zero-allocation API boundaries declared using `ReadOnlySpan<byte>` parameters.
 
 #### Concrete Tasks
-1.  Map the trust boundaries between the external SSH client, the target runtime host, and the Loom execution environment.
+1.  Map the trust boundaries between the external SSH client, the Linux host DMZ network zone, and the localized application runtime.
 2.  Define maximum buffer limits for incoming raw TCP payloads within the `Loom.SSH` socket reader to mitigate buffer exhaustion attacks.
-3.  Formulate memory consumption constraints and throughput target profiles for the vector processing loops.
+3.  Design local permission scopes for memory-mapped file cache structures.
 
 #### Roles & Responsibilities
-*   **Lead Systems Architect:** Define structural boundary interfaces and zero-allocation target profiles.
-*   **Security Architect:** Execute STRIDE modeling and validate raw socket buffer limit specifications.
+*   **Security Architect:** Execute STRIDE modeling and validate raw socket buffer limits and systemd sandbox configurations.
+*   **Systems Engineer:** Formulate memory-mapped file permission models and host network interface specifications.
 
 ---
 
@@ -62,20 +73,22 @@ This document defines the production-grade Methodology Planning Phase for Projec
 
 #### Exit Criteria
 *   Static code analyzer setup showing zero dynamic compilation pathways.
-*   Design sign-off confirming no dynamic reflection or late binding in critical paths.
+*   System architecture design verified as reflection-free.
 
 #### Required Artifacts
 *   **Assembly Dependency Graph:** Directing target dependency layout (`Loom.Host` $\to$ `Loom.TUI` $\to$ `Loom.SSH` $\to$ `Loom.Storage` $\to$ `Loom.Core`).
 *   **Struct Memory Layout Schema:** Explicit structure definitions detailing byte alignment and packing constraints.
+*   **Systemd Service Unit Draft:** Incorporating kernel-enforced process sandboxing rules.
 
 #### Concrete Tasks
 1.  Audit third-party dependencies for AOT compatibility; reject libraries containing dynamic IL generation (`System.Reflection.Emit`).
 2.  Design code-generated alternatives or compile-time metadata registration schemas to replace dynamic runtime type resolution.
 3.  Design structural alignments for memory-mapped file persistence using natural power-of-two boundaries (4-byte alignment for floats, 8-byte for doubles).
+4.  Write the declarative systemd configuration file for the native host process.
 
 #### Roles & Responsibilities
 *   **Principal AOT Engineer:** Review third-party libraries for IL trimming readiness and define reflection-free serialization contracts.
-*   **Lead Systems Architect:** Layout solution-wide physical code architecture and interface abstractions.
+*   **Systems Architect:** Layout solution-wide physical code architecture and systemd sandbox parameters.
 
 ---
 
@@ -102,10 +115,10 @@ This document defines the production-grade Methodology Planning Phase for Projec
 #### Sub-Stage C2: TUI Render Engine (`Loom.TUI`)
 *   **Entry Criteria:** Sub-stage C1 exit criteria fulfilled.
 *   **Exit Criteria:** Interactive console output successfully rendered over redirected network stream; resize packets handled dynamically without heap allocations.
-*   **Required Artifacts:** Custom stream-backed `IAnsiConsole` driver; window-change event distribution loops.
+*   **Required Artifacts:** Custom stream-backed `IAnsiConsole` driver; window-change event distribution loops [2].
 *   **Concrete Tasks:**
     1.  Create stream translation classes converting Spectre.Console output sequences directly to network write buffers.
-    2.  Implement packet event interceptor in `Loom.SSH` to process client `window-change` terminal resize sequences.
+    2.  Implement packet event interceptor in `Loom.SSH` to process client `window-change` terminal resize sequences [2].
     3.  Develop view-render widgets utilizing static type converters, avoiding reflection-based property pathways.
 *   **Roles:** **TUI Developer** (Component UI, layout engines), **Lead Network Engineer** (Network-to-TUI stream redirection).
 
@@ -203,11 +216,11 @@ Stage E:                                            [██]
 ```
 
 ### Sprint 1 (Weeks 1-2): Stage A (Requirements & Threat Modeling)
-*   **Deliverables:** Completed STRIDE Threat matrix; baseline zero-allocation interfaces defined.
+*   **Deliverables:** Completed STRIDE Threat matrix; baseline zero-allocation interfaces defined; Linux hardening baseline document completed.
 *   **Verification:** Architecture review of communication protocols; verification of raw socket buffer allocations.
 
 ### Sprint 2 (Weeks 3-4): Stage B (AOT Design & Architecture)
-*   **Deliverables:** Assembly architecture diagrams; explicit structure definitions; target system library reviews.
+*   **Deliverables:** Assembly architecture diagrams; explicit structure definitions; systemd service unit draft designed with sandboxing constraints.
 *   **Verification:** Dependency validation scan; check for dynamic IL generation tools in dependency lists.
 
 ### Sprint 3 (Weeks 5-6): Stages C1-C2 (SSH & TUI Foundation)
@@ -223,7 +236,7 @@ Stage E:                                            [██]
 *   **Verification:** Run build analyzer checks with compilation flags set to treat trim warnings as compilation errors.
 
 ### Sprint 6 (Weeks 11-12): Stage E (CI/CD Pipeline Setup & System Launch)
-*   **Deliverables:** Build workflow pipelines; binary code-signing configurations; final system release packages.
+*   **Deliverables:** Build workflow pipelines; binary code-signing configurations; final system release packages; systemd deployment manifest.
 *   **Verification:** Verify dual-mode test runs execute without errors on both Linux and Windows runner targets.
 
 ---
@@ -237,6 +250,9 @@ Stage E:                                            [██]
 | **R-03** | **Memory alignment faults on ARM64**<br>Reading unaligned structs (using `Pack = 1`) on ARM64 platforms causes slow reads or program crashes. | Stage C4 | Structure cache database files with natural field boundaries (align fields to their natural size offsets) and avoid `Pack = 1` rules. |
 | **R-04** | **Unmanaged memory leaks in pointer routines**<br>Failures during pointer access (inside `AcquirePointer`) leak memory-mapped file handles over long execution periods. | Stage C4 | Enforce strict usage of `try...finally` structures to release pointers via `ReleasePointer` immediately after execution finishes. |
 | **R-05** | **Path context allocation storms**<br>Recursive parsing during JSON data ingestion creates string allocations on the heap, breaking the zero-allocation target. | Stage C5 | Use rented scratch buffers via `ArrayPool<char>` and manipulate data using `Span<char>` slices rather than instantiating new string objects. |
+| **R-06** | **Privileged Port Bind Failure**<br>The systemd unit fails to bind to port 2222 if executing as an unprivileged user without proper capabilities. | Stage B, E | Configure the systemd service file with the `AmbientCapabilities=CAP_NET_BIND_SERVICE` parameter to allow the unprivileged `loomd` user to bind to privileged ports. |
+| **R-07** | **Systemd Sandbox Misconfiguration Faults**<br>The native host binary crashes on startup because it attempts forbidden operations (e.g., executing shell scripts, accessing home folders). | Stage B, E | Run `systemd-analyze security loom.service` in staging environments to trace and adjust sandbox rules before deploying to production. |
+| **R-08** | **MMF Cache Directory Access Violation**<br>The application fails to initialize because Systemd blocks writes to `/var/cache` directories. | Stage B, C4, E | Set `ReadWritePaths=/var/cache/loom/` within the systemd unit configuration file, ensuring only the target cache folder is writable. |
 
 ---
 
@@ -264,6 +280,11 @@ The toolchain versions listed below are required across development environments
     *   Valgrind (Version 3.23.0+) on Linux targets to monitor unmanaged memory allocations.
     *   GDB (Version 15.1+) for verifying crash dump logs.
 *   **Security Validation Fuzzers:** SharpFuzz (Version 2.2.0+) for structural buffer validation checks.
+*   **Linux Hardening & Firewalling Tools:**
+    *   `ufw` (Uncomplicated Firewall) or `nftables` for defining host network filtering.
+    *   `systemd` (Version 255+) for process sandboxing, monitoring, and namespace management.
+    *   `fail2ban` (Version 1.0.x) to detect and block brute-force attempts on SSH port 2222.
+    *   `aide` (Advanced Intrusion Detection Environment) for local file integrity monitoring (FIM) of binary directories.
 
 ---
 
@@ -317,7 +338,49 @@ The automated CI environment runs tests across two verification lanes:
 
 ---
 
-### B. CI Integration & Gated Triggers
+### B. Linux Hardening Security Assertion Tests
+In Stage E, deployment tests must assert compliance with the targeted Linux security baseline. These tests are executed on a staging Linux runner before releasing the binary to production:
+
+```bash
+#!/usr/bin/env bash
+set -eo pipefail
+
+echo "Executing Hardened Linux Security Assertions..."
+
+# Assertion 1: Verify the service runs under the unprivileged user 'loomd' (not root)
+RUNNING_USER=$(ps -o user= -p "$(pgrep loom)")
+if [ "$RUNNING_USER" == "root" ]; then
+    echo "ERROR: Loom is running as root. Violates Least Privilege."
+    exit 1
+fi
+
+# Assertion 2: Verify Systemd Service Sandboxing exposure score
+# systemd-analyze security returns an exposure score; target less than 2.0 (highly protected)
+EXPOSURE_SCORE=$(systemd-analyze security loom.service | grep -E "Exposure level" | awk '{print $3}')
+if (( $(echo "$EXPOSURE_SCORE > 2.0" | bc -l) )); then
+    echo "WARNING: Systemd exposure score is $EXPOSURE_SCORE. Review sandboxing configurations."
+    exit 1
+fi
+
+# Assertion 3: Verify Memory-Mapped File Directory permissions
+CACHE_PERMS=$(stat -c "%a" /var/cache/loom/index.bin)
+if [ "$CACHE_PERMS" != "600" ]; then
+    echo "ERROR: Cache file permissions are $CACHE_PERMS instead of 600."
+    exit 1
+fi
+
+# Assertion 4: Verify Firewall Rules (Only allow defined ports)
+if ! ufw status | grep -q "2222/tcp"; then
+    echo "ERROR: UFW does not have an active rule allowing port 2222."
+    exit 1
+fi
+
+echo "All Hardened Linux Security Assertions Passed."
+```
+
+---
+
+### C. CI Integration & Gated Triggers
 
 The compilation pipeline defines automated check rules on target events:
 
@@ -354,7 +417,7 @@ jobs:
 
 ---
 
-### C. Release Artifact Verification & Signing
+### D. Release Artifact Verification & Signing
 When builds on the target release branch complete successfully, the pipeline generates deployable binaries:
 
 1.  **Binary Stripping:**
